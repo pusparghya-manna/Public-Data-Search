@@ -1,41 +1,52 @@
-# Breaches Search API
+# Public-data-search
 
-Simple zero-dependency proxy for `https://dash.niamonx.io/breaches_search`.
+Zero-dependency Node.js proxy that searches `dash.niamonx.io/breaches_search` and returns **only HiTeckGroop.in** results in a clean JSON shape.
 
 ## Deploy on Railway
 
-1. Create a new project on Railway
-2. Deploy from this folder (or push to a GitHub repo and connect it)
-3. Railway will auto-detect Node and run `npm start`
-4. Your public URL will be something like `https://your-app.up.railway.app`
-
-No environment variables needed (cookies are hardcoded).
+1. Connect this GitHub repo to Railway
+2. Deploy (Railway runs `npm start` automatically)
+3. Use the public URL
 
 ## Usage
 
-### POST /search
-```bash
-curl -X POST https://YOUR-RAILWAY-URL/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "+91 9635592709"}'
+```
+GET /search?number=9635592709
 ```
 
-### GET /search
-```bash
-curl "https://YOUR-RAILWAY-URL/search?q=+91%209635592709"
+This automatically becomes an internal search for `+91 9635592709` and returns only HiTeckGroop.in records.
+
+Also supported:
+- `GET /search?q=+91%209635592709`
+- `POST /search` with body `{ "number": "9635592709" }` or `{ "query": "+91 9635592709" }`
+
+## Example response
+
+```json
+{
+  "count": 3,
+  "results": [
+    {
+      "row_id": "336087181",
+      "_id": "00000000000000001408488d",
+      "mobile": "9*********09",
+      "name": "T***k C*****a P***a",
+      "fname": "K*****************a",
+      "address": "*** T**** C****** P********************************** B************",
+      "alt": null,
+      "circle": "J****B",
+      "id": "2**********5",
+      "email": null,
+      "raw": { ... }
+    }
+  ]
+}
 ```
 
-### Health
-```bash
-curl https://YOUR-RAILWAY-URL/
-```
+- Sensitive characters are shown as `*`
+- `fname` = name of the father
+- Multiple records appear as separate objects in `results`
 
 ## Updating cookies
 
-When the session expires (you get auth errors), open `server.js` and replace the three cookie values in the `COOKIES` array with fresh ones from your browser.
-
-## Notes
-
-- Uses the exact headers + cookies you provided
-- Returns the upstream JSON as-is
-- Preview mode / plan limits come from the upstream site
+When the session expires, edit the `COOKIES` array in `server.js` with fresh values from your browser.
