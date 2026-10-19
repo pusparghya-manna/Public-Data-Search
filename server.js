@@ -25,8 +25,7 @@ function sendJson(res, status, data) {
 }
 
 function maskValue(val) {
-  if (val == null) return null;
-  // Replace black rectangle (█) and other common mask chars with *
+  if (val == null || val === '') return null;
   return String(val)
     .replace(/\u2588/g, '*')
     .replace(/█/g, '*')
@@ -37,13 +36,8 @@ function maskValue(val) {
 function normalizePhone(input) {
   if (!input) return null;
   let s = String(input).trim();
-  // If only digits and length 10, prefix +91
-  if (/^\d{10}$/.test(s)) {
-    return `+91 ${s}`;
-  }
-  // Already has +91
+  if (/^\d{10}$/.test(s)) return `+91 ${s}`;
   if (s.startsWith('+91')) return s;
-  // Has 91 prefix without +
   if (/^91\d{10}$/.test(s)) return `+${s.slice(0, 2)} ${s.slice(2)}`;
   return s;
 }
@@ -77,104 +71,72 @@ function extractHiTeckResults(upstream) {
   const result = upstream?.result || upstream;
   const blocks = result?.blocks || [];
 
-  // Find HiTeckGroop / HiTechGroop block
   const hiteck = blocks.find(b => {
     const t = (b.title || '').toLowerCase();
     return t.includes('hiteck') || t.includes('hitech');
   });
 
-  if (!hiteck) {
-    return { count: 0, results: [], message: 'No HiTeckGroop.in data found for this query' };
-  }
+  if (!hiteck) return [];
 
   const groups = hiteck.groups_normalized || [];
   const results = [];
 
   for (const group of groups) {
     const fields = group.fields || [];
-    if (fields.length === 0) continue; // skip description-only groups
+    if (fields.length === 0) continue;
 
-    // Collect fields into a map (handle multiple telephones)
-    const map = {};
     const phones = [];
+    let name = null;
+    let fname = null;
+    let address = null;
+    let id = null;
+    let email = null;
 
     for (const f of fields) {
-      const key = (f.key || '').toLowerCase();
+      const key = (f.key || '').toLowerCase().trim();
       const val = maskValue(f.value);
 
+      if (val == null) continue;
+
       if (key === 'telephone' || key === 'phone' || key === 'mobile') {
-        if (val) phones.push(val);
+        phones.push(val);
       } else if (key === 'full_name' || key === 'name') {
-        map.name = val;
+        name = val;
       } else if (key === 'name_of_the_father' || key === 'fname' || key === 'father_name') {
-        map.fname = val;
+        fname = val;
       } else if (key === 'adres' || key === 'address' || key === 'addr') {
-        map.address = val;
+        address = val;
+      } else if (key === 'passport_number' || key === 'document_number' || key === 'id') {
+        // Prefer first id found; do not overwrite if already set
+        if (id == null) id = val;
       } else if (key === 'email') {
-        map.email = val;
-      } else if (key === '_region' || key === 'region' || key === 'circle') {
-        map.circle = val;
-      } else if (key === 'document_number' || key === 'passport_number' || key === 'id') {
-        map.document = val;
-      } else {
-        // keep extras in raw later
-        map[key] = val;
+        email = val;
       }
+      // REGION and other fields intentionally ignored
     }
 
-    // Prefer the phone that matches the searched number if possible, else first
-    let mobile = phones[0] || null;
-    if (phones.length > 1) {
-      // keep first as primary
-      mobile = phones[0];
+    // number: single string if one phone, array if multiple
+    let number = null;
+    if (phones.length === 1) number = phones[0];
+    else if (phones.length > 1) number = phones;
+
+    // Only include a record if it has at least some real data
+    if (number == null && name == null && fname == null && address == null && id == null && email == null) {
+      continue;
     }
 
-    // Generate stable-ish ids from content
-    const seed = `${map.name || ''}|${mobile || ''}|${map.address || ''}|${group.index}`;
-    const hash = simpleHash(seed);
-
-    const row = {
-      row_id: String(hash % 2000000000),
-      _id: hash.toString(16).padStart(24, '0').slice(0, 24),
-      mobile: mobile,
-      name: map.name || null,
-      fname: map.fname || null,
-      address: map.address || null,
-      alt: phones.length > 1 ? phones.slice(1).join(', ') : null,
-      circle: map.circle || null,
-      id: map.document || String(hash % 1000000000000),
-      email: map.email || null,
-      raw: {
-        id: map.document || String(hash % 1000000000000),
-        _id: { $oid: hash.toString(16).padStart(24, '0').slice(0, 24) },
-        name: map.name || null,
-        circle: map.circle || null,
-        mobile: mobile,
-        address: map.address || null,
-        fname: map.fname || null,
-        email: map.email || null,
-        document: map.document || null,
-        group_index: group.index,
-        source: 'HiTeckGroop.in'
-      }
-    };
-
-    results.push(row);
+    // Exact field order required by the API contract
+    results.push({
+      number: number,
+      name: name,
+      fname: fname,
+      address: address,
+      id: id,
+      email: email
+    });
   }
 
-  return {
-    count: results.length,
-    results
-  };
-}
-
-function simpleHash(str) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h) + str.charCodeAt(i);
-    h |= 0;
-  }
-  return Math.abs(h);
+  return results;
 }
 
 function parseBody(req) {
@@ -204,15 +166,14 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
-  // Health
   if (url.pathname === '/' && req.method === 'GET') {
     return sendJson(res, 200, {
       status: 'ok',
-      message: 'Public Data Search API (HiTeckGroop filter)',
+      message: 'Public Data Search API (HiTeckGroop only)',
       usage: {
-        'GET /search?number=9635592709': 'Auto +91 prefix, returns only HiTeckGroop.in results',
+        'GET /search?number=9635592709': 'Auto +91, returns array of HiTeckGroop records',
         'GET /search?q=+91%209635592709': 'Same',
-        'POST /search': 'Body: { "query": "+91 9635592709" } or { "number": "9635592709" }'
+        'POST /search': '{ "number": "9635592709" } or { "query": "+91 9635592709" }'
       }
     });
   }
@@ -225,7 +186,6 @@ const server = http.createServer(async (req, res) => {
         const body = await parseBody(req);
         query = body.query || body.q || body.number;
       } else if (req.method === 'GET') {
-        // Prefer ?number= then ?q= / ?query=
         query = url.searchParams.get('number')
           || url.searchParams.get('q')
           || url.searchParams.get('query');
@@ -239,9 +199,7 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      // Normalize: if 10-digit number, turn into +91 XXXXXXXXXX
       const normalized = normalizePhone(query.trim());
-
       const upstream = await doSearch(normalized);
       const shaped = extractHiTeckResults(upstream);
 
