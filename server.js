@@ -3,12 +3,9 @@ const { URL } = require('url');
 
 const PORT = process.env.PORT || 3000;
 
-// ============ HARDCODED SESSION COOKIES (update when they expire) ============
-const COOKIES = [
-  'PHPSESSID=5rsrq4dqnpsueauoimrt74hc7m',
-  'cf_clearance=0Q_SZIfTLTPtE4eCSn2EMYIt_jz.OWu8IvtCR7HfYZo-1792424594-1.2.1.1-uLIwo3a.HpcOml72uxtSFdQXxvUzCNt7hwUAkvIaXAFP715dpGOspBhPPPdOb6pfeP3kHD1BezERwwsQkGLJas8l2uOXQC4LCsIVaQV4cT4JMijq8cgoFQ.wiDqOuUDuRh3aND2aeTzQnTuc8rOxW3gZPr9QkGCE_eh28scQ3lS6dAhxlJVtVnC2F4mqf5E8BHNmJtfo3334pD03j2gp_1WhNjelzLNR8zHTurSRvB2BWnUs8ieBn5RpHev8kDEoKO1_u7jFSl4YnLO3ZzGR8epQ4CfzZFKobX.6guNeIPsctUNGqzUOcVPjQVba1WPcy3IuUj8adRZSjiJ_xLIw4Z_MYOdkqpbYJT_p8AHGtM9SPohUZ8pjmXwalyCqzSpV3ikSVCRHUH5ynX0n.UpsXdSogtNhFHDt5RAGCTXd84PaQKlikbSTUSd_dEosa5Q3sUyIOxkR.mZT61oF7FQdOw',
-  'sid=268ccee3dee0b202df958f069d2eab9687a7e4eed406a66a2eda56393bc11dbd'
-].join('; ');
+// Cookies must be set via environment variable COOKIES
+// Example: COOKIES="PHPSESSID=xxx; cf_clearance=yyy; sid=zzz"
+const COOKIES = process.env.COOKIES || '';
 
 const TARGET_URL = 'https://dash.niamonx.io/breaches_search';
 
@@ -43,6 +40,10 @@ function normalizePhone(input) {
 }
 
 async function doSearch(query) {
+  if (!COOKIES) {
+    throw new Error('COOKIES environment variable is not set. See README for how to get and set cookies.');
+  }
+
   const payload = JSON.stringify({ action: 'search', query });
 
   const response = await fetch(TARGET_URL, {
@@ -107,25 +108,20 @@ function extractHiTeckResults(upstream) {
       } else if (key === 'adres' || key === 'address' || key === 'addr') {
         address = val;
       } else if (key === 'passport_number' || key === 'document_number' || key === 'id') {
-        // Prefer first id found; do not overwrite if already set
         if (id == null) id = val;
       } else if (key === 'email') {
         email = val;
       }
-      // REGION and other fields intentionally ignored
     }
 
-    // number: single string if one phone, array if multiple
     let number = null;
     if (phones.length === 1) number = phones[0];
     else if (phones.length > 1) number = phones;
 
-    // Only include a record if it has at least some real data
     if (number == null && name == null && fname == null && address == null && id == null && email == null) {
       continue;
     }
 
-    // Exact field order required by the API contract
     results.push({
       number: number,
       name: name,
@@ -170,6 +166,7 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, {
       status: 'ok',
       message: 'Public Data Search API (HiTeckGroop only)',
+      cookies_set: Boolean(COOKIES),
       usage: {
         'GET /search?number=9635592709': 'Auto +91, returns array of HiTeckGroop records',
         'GET /search?q=+91%209635592709': 'Same',
@@ -215,4 +212,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Public Data Search API listening on port ${PORT}`);
+  if (!COOKIES) {
+    console.warn('WARNING: COOKIES env var is not set. /search will fail until you set it.');
+  }
 });
