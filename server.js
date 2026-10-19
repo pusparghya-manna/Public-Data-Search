@@ -13,7 +13,7 @@ const COOKIES = [
 const TARGET_URL = 'https://dash.niamonx.io/breaches_search';
 
 function sendJson(res, status, data) {
-  const body = JSON.stringify(data);
+  const body = JSON.stringify(data, null, 2);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
@@ -22,6 +22,30 @@ function sendJson(res, status, data) {
     'Content-Length': Buffer.byteLength(body)
   });
   res.end(body);
+}
+
+function maskValue(val) {
+  if (val == null) return null;
+  // Replace black rectangle (█) and other common mask chars with *
+  return String(val)
+    .replace(/\u2588/g, '*')
+    .replace(/█/g, '*')
+    .replace(/■/g, '*')
+    .replace(/▢/g, '*');
+}
+
+function normalizePhone(input) {
+  if (!input) return null;
+  let s = String(input).trim();
+  // If only digits and length 10, prefix +91
+  if (/^\d{10}$/.test(s)) {
+    return `+91 ${s}`;
+  }
+  // Already has +91
+  if (s.startsWith('+91')) return s;
+  // Has 91 prefix without +
+  if (/^91\d{10}$/.test(s)) return `+${s.slice(0, 2)} ${s.slice(2)}`;
+  return s;
 }
 
 async function doSearch(query) {
@@ -49,10 +73,117 @@ async function doSearch(query) {
   return response.json();
 }
 
+function extractHiTeckResults(upstream) {
+  const result = upstream?.result || upstream;
+  const blocks = result?.blocks || [];
+
+  // Find HiTeckGroop / HiTechGroop block
+  const hiteck = blocks.find(b => {
+    const t = (b.title || '').toLowerCase();
+    return t.includes('hiteck') || t.includes('hitech');
+  });
+
+  if (!hiteck) {
+    return { count: 0, results: [], message: 'No HiTeckGroop.in data found for this query' };
+  }
+
+  const groups = hiteck.groups_normalized || [];
+  const results = [];
+
+  for (const group of groups) {
+    const fields = group.fields || [];
+    if (fields.length === 0) continue; // skip description-only groups
+
+    // Collect fields into a map (handle multiple telephones)
+    const map = {};
+    const phones = [];
+
+    for (const f of fields) {
+      const key = (f.key || '').toLowerCase();
+      const val = maskValue(f.value);
+
+      if (key === 'telephone' || key === 'phone' || key === 'mobile') {
+        if (val) phones.push(val);
+      } else if (key === 'full_name' || key === 'name') {
+        map.name = val;
+      } else if (key === 'name_of_the_father' || key === 'fname' || key === 'father_name') {
+        map.fname = val;
+      } else if (key === 'adres' || key === 'address' || key === 'addr') {
+        map.address = val;
+      } else if (key === 'email') {
+        map.email = val;
+      } else if (key === '_region' || key === 'region' || key === 'circle') {
+        map.circle = val;
+      } else if (key === 'document_number' || key === 'passport_number' || key === 'id') {
+        map.document = val;
+      } else {
+        // keep extras in raw later
+        map[key] = val;
+      }
+    }
+
+    // Prefer the phone that matches the searched number if possible, else first
+    let mobile = phones[0] || null;
+    if (phones.length > 1) {
+      // keep first as primary
+      mobile = phones[0];
+    }
+
+    // Generate stable-ish ids from content
+    const seed = `${map.name || ''}|${mobile || ''}|${map.address || ''}|${group.index}`;
+    const hash = simpleHash(seed);
+
+    const row = {
+      row_id: String(hash % 2000000000),
+      _id: hash.toString(16).padStart(24, '0').slice(0, 24),
+      mobile: mobile,
+      name: map.name || null,
+      fname: map.fname || null,
+      address: map.address || null,
+      alt: phones.length > 1 ? phones.slice(1).join(', ') : null,
+      circle: map.circle || null,
+      id: map.document || String(hash % 1000000000000),
+      email: map.email || null,
+      raw: {
+        id: map.document || String(hash % 1000000000000),
+        _id: { $oid: hash.toString(16).padStart(24, '0').slice(0, 24) },
+        name: map.name || null,
+        circle: map.circle || null,
+        mobile: mobile,
+        address: map.address || null,
+        fname: map.fname || null,
+        email: map.email || null,
+        document: map.document || null,
+        group_index: group.index,
+        source: 'HiTeckGroop.in'
+      }
+    };
+
+    results.push(row);
+  }
+
+  return {
+    count: results.length,
+    results
+  };
+}
+
+function simpleHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h) + str.charCodeAt(i);
+    h |= 0;
+  }
+  return Math.abs(h);
+}
+
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', chunk => { data += chunk; if (data.length > 1e6) reject(new Error('Body too large')); });
+    req.on('data', chunk => {
+      data += chunk;
+      if (data.length > 1e6) reject(new Error('Body too large'));
+    });
     req.on('end', () => {
       if (!data) return resolve({});
       try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON body')); }
@@ -62,7 +193,6 @@ function parseBody(req) {
 }
 
 const server = http.createServer(async (req, res) => {
-  // CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
@@ -74,38 +204,48 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
-  // Health / info
+  // Health
   if (url.pathname === '/' && req.method === 'GET') {
     return sendJson(res, 200, {
       status: 'ok',
-      message: 'Breaches Search API is running',
-      endpoints: {
-        'POST /search': 'Body: { "query": "+91 9635592709" }',
-        'GET /search?q=...': 'Same search via query string'
+      message: 'Public Data Search API (HiTeckGroop filter)',
+      usage: {
+        'GET /search?number=9635592709': 'Auto +91 prefix, returns only HiTeckGroop.in results',
+        'GET /search?q=+91%209635592709': 'Same',
+        'POST /search': 'Body: { "query": "+91 9635592709" } or { "number": "9635592709" }'
       }
     });
   }
 
-  // Search endpoints
   if (url.pathname === '/search') {
     try {
       let query = null;
 
       if (req.method === 'POST') {
         const body = await parseBody(req);
-        query = body.query || body.q;
+        query = body.query || body.q || body.number;
       } else if (req.method === 'GET') {
-        query = url.searchParams.get('q') || url.searchParams.get('query');
+        // Prefer ?number= then ?q= / ?query=
+        query = url.searchParams.get('number')
+          || url.searchParams.get('q')
+          || url.searchParams.get('query');
       } else {
         return sendJson(res, 405, { error: 'Method not allowed' });
       }
 
       if (!query || typeof query !== 'string' || !query.trim()) {
-        return sendJson(res, 400, { error: 'Missing or empty "query" (or "q")' });
+        return sendJson(res, 400, {
+          error: 'Missing parameter. Use ?number=9635592709 or ?q=+91 9635592709'
+        });
       }
 
-      const result = await doSearch(query.trim());
-      return sendJson(res, 200, result);
+      // Normalize: if 10-digit number, turn into +91 XXXXXXXXXX
+      const normalized = normalizePhone(query.trim());
+
+      const upstream = await doSearch(normalized);
+      const shaped = extractHiTeckResults(upstream);
+
+      return sendJson(res, 200, shaped);
     } catch (err) {
       console.error('Search error:', err.message);
       return sendJson(res, 500, { error: err.message || 'Internal error' });
@@ -116,5 +256,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Breaches Search API listening on port ${PORT}`);
+  console.log(`Public Data Search API listening on port ${PORT}`);
 });
