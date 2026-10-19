@@ -1,4 +1,4 @@
-# Public-data-search
+# Public-Data-Search
 
 Zero-dependency Node.js API that searches niamonx breaches and returns **only HiTeckGroop.in** records.
 
