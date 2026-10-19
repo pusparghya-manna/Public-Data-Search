@@ -1,10 +1,11 @@
 const http = require('http');
 const { URL } = require('url');
 
+// Railway injects PORT automatically — do NOT hardcode 3000 in Railway settings
 const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0';
 
 // Cookies must be set via environment variable COOKIES
-// Example: COOKIES="PHPSESSID=xxx; cf_clearance=yyy; sid=zzz"
 const COOKIES = process.env.COOKIES || '';
 
 const TARGET_URL = 'https://dash.niamonx.io/breaches_search';
@@ -210,8 +211,8 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 404, { error: 'Not found' });
 });
 
-server.listen(PORT, () => {
-  console.log(`Public Data Search API listening on port ${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Public Data Search API listening on http://${HOST}:${PORT}`);
   if (!COOKIES) {
     console.warn('WARNING: COOKIES env var is not set. /search will fail until you set it.');
   }
