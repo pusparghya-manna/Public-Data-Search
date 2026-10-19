@@ -166,12 +166,12 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/' && req.method === 'GET') {
     return sendJson(res, 200, {
       status: 'ok',
-      message: 'Public Data Search API (HiTeckGroop only)',
+      message: 'Public Data Search API',
       cookies_set: Boolean(COOKIES),
       usage: {
-        'GET /search?number=9635592709': 'Auto +91, returns array of HiTeckGroop records',
-        'GET /search?q=+91%209635592709': 'Same',
-        'POST /search': '{ "number": "9635592709" } or { "query": "+91 9635592709" }'
+        'GET /search?number=9876543210': 'Auto +91',
+        'GET /search?q=+91%209876543210': 'Same',
+        'POST /search': '{ "number": "9876543210" } or { "query": "+91 9876543210" }'
       }
     });
   }
